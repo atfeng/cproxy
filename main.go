@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +18,16 @@ import (
 	"github.com/docker/docker/client"
 )
 
+var updateInterval = 5 * time.Second // Interval for container update
+var domainSuffix string
+
 func main() {
+	if suffix, found := os.LookupEnv("DOMAIN_SUFFIX"); found {
+		if len(suffix) < 2 || !strings.HasPrefix(suffix, ".") {
+			log.Fatal("DOMAIN_SUFFIX should like .test.com")
+		}
+		domainSuffix = suffix
+	}
 	go refreshContainers()
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -28,7 +39,7 @@ func main() {
 
 		targetUrl, ok := containerTargets.Load(hostname)
 		if !ok {
-			http.Error(w, "Target not found", http.StatusNotFound)
+			w.Write(generateIndex(domainSuffix))
 			return
 		}
 
@@ -42,10 +53,33 @@ func main() {
 	}
 }
 
+func generateIndex(domainSuffix string) []byte {
+	lists := make([]string, 0, 0)
+	containerTargets.Range(func(k, v any) bool {
+		name := k.(string)
+
+		domain := name + domainSuffix
+		list := "\t\t" + fmt.Sprintf(`<li><a href="%s" target="_blank">%s</a></li>`, domain, domain)
+		lists = append(lists, list)
+		return true
+	})
+
+	html := "<html>\n<body>\n"
+	if len(lists) > 0 {
+		sort.Strings(lists)
+		html += "\t<ul>\n" + strings.Join(lists, "\n") + "\n\t</ul>\n"
+	} else {
+		html += "\t<h1>No Container running</h1>\n"
+	}
+
+	html += "</body>\n</html>"
+	return []byte(html)
+}
+
 var containerTargets = sync.Map{}
 
 func refreshContainers() {
-	c := time.Tick(5 * time.Second)
+	c := time.Tick(updateInterval)
 	for range c {
 		cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 		if err != nil {
